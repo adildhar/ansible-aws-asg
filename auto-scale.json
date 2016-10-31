@@ -1,0 +1,159 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "This template will create the symfony backup instance.",
+  "Parameters" : {
+    "Landscape": {
+      "Description": "Landscape deploying into, NonProd or Production",
+      "Type": "String",
+      "Default": "XXXXX",
+      "AllowedValues": ["NonProd", "Production"],
+      "ConstraintDescription": "Must be one of: NonProd or Production"
+    }
+  },
+  "Mappings": {
+  "Production": {
+    "xxxx": {
+      "InstanceType": "xxxx",
+      "StackMinSize" : "xx",
+      "KeyName": "xxxx",
+      "VpcID": "xxxx",
+      "LBNames": "xxxx",
+      "SNSTopic": "xxxxxxx",
+      "AvailabilityZone1": "xxxx",
+      "AvailabilityZone2": "xxxx",
+      "AmiID": "xxxx",
+      "SecurityGroups": "xxxx",
+      "PriSubnet1": "xxxxx",
+      "PriSubnet2": "xxxx",
+      "iamAppRole": "xxxx"
+    }
+  }
+  },
+  "Conditions": {
+    "isProduction": {
+      "Fn::Equals": [{
+        "Ref": "Landscape"
+      },"Production"]
+    }
+  },
+  "Resources": {
+    "asgWebServer": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {
+        "VPCZoneIdentifier": [
+          {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"PriSubnet1"]},
+          {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"PriSubnet2"]}
+        ],
+        "AvailabilityZones": [
+          {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"AvailabilityZone1"]},
+          {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"AvailabilityZone2"]}
+        ],
+        "LaunchConfigurationName": {"Ref": "LaunchConfig"},
+        "MinSize": "1",
+        "MaxSize": "1",
+        "Tags": [
+          {"Key": "Name","Value": {"Ref": "AWS::StackName"},"PropagateAtLaunch":"true"}
+        ],
+        "LoadBalancerNames": [
+                              {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"LBNames"]}
+                             ]   
+     }},
+    "asScaleUpPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "asgWebServer" },
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "1"
+      } },
+    "asScaleDownPolicy" : {
+      "Type" : "AWS::AutoScaling::ScalingPolicy",
+      "Properties" : {
+        "AdjustmentType" : "ChangeInCapacity",
+        "AutoScalingGroupName" : { "Ref" : "asgWebServer" },
+        "Cooldown" : "60",
+        "ScalingAdjustment" : "-1"
+      } },
+    "asCPUAlarmHigh": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "EvaluationPeriods": "1",
+        "Statistic": "Average",
+        "Threshold": "50",
+        "AlarmDescription": "Alarm if CPU too high or metric disappears indicating instance is down",
+        "Period": "60",
+        "AlarmActions": [ 
+          { "Ref": "asScaleUpPolicy" },
+          {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"SNSTopic"]}
+        ],
+       "Namespace": "AWS/EC2",
+       "Dimensions": [ {
+         "Name": "AutoScalingGroupName",
+         "Value": { "Ref": "asgWebServer" }
+        } ],
+        "ComparisonOperator": "GreaterThanThreshold",
+        "MetricName": "CPUUtilization"
+      } },   
+    "asCPUAlarmLow": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+         "EvaluationPeriods": "1",
+         "Statistic": "Average",
+          "Threshold": "20",
+          "AlarmDescription": "Alarm if CPU too low so we can terminate some instances",
+          "Period": "60",
+          "AlarmActions": [ 
+            { "Ref": "asScaleDownPolicy" },
+            {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"SNSTopic"]}
+          ],
+          "Namespace": "AWS/EC2",
+          "Dimensions": [ {
+            "Name": "AutoScalingGroupName",
+            "Value": { "Ref": "asgWebServer" }
+          }],
+          "ComparisonOperator": "LessThanThreshold",
+          "MetricName": "CPUUtilization"
+      } },
+    "EC2RecoveryAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+         "AlarmDescription": "Trigger a recovery when instance status check fails for 15 consecutive minutes.",
+         "Namespace": "AWS/EC2" ,
+         "MetricName": "StatusCheckFailed_System",
+         "Statistic": "Minimum",
+         "Period": "60",
+         "EvaluationPeriods": "15",
+         "ComparisonOperator": "GreaterThanThreshold",
+         "Threshold": "0",
+         "AlarmActions": [ {"Fn::Join" : ["", ["arn:aws:automate:", { "Ref" : "AWS::Region" }, ":ec2:recover" ]]} ],
+         "Dimensions": [{"Name": "AutoScalingGroupName","Value": {"Ref": "asgWebServer"}}]
+      } },
+    "LaunchConfig": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "AssociatePublicIpAddress": "false",
+        "ImageId": {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"AmiID"]},
+        "KeyName": {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"KeyName"] },
+        "SecurityGroups" : [
+        {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"SecurityGroups"]}
+        ],
+        "InstanceType": {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"InstanceType" ]},
+        "IamInstanceProfile" : {"Fn::FindInMap": [{"Ref": "Landscape"},{"Ref": "AWS::Region"},"iamAppRole"]}, 
+	      "UserData" : { "Fn::Base64" : { "Fn::Join" : ["",[
+          "#!/bin/bash","\n",
+          "apt-get install awscli","\n",
+          "apt-add-repository -y ppa:ansible/ansible","\n",
+          "apt-get update","\n",
+          "apt-get install -y ansible","\n",
+          "aws s3 cp s3://xxxxxxxx/ansible-deploy.tar.gz /tmp/deploy.tar.gz","\n",
+          "mkdir -p /etc/ansible/deploy","\n",
+          "tar -C /etc/ansible/deploy -zxvf /tmp/deploy.tar.gz","\n",
+          "cd /etc/ansible/deploy","\n",
+          "ansible-playbook -i localhost, -c local run.yml","\n"
+        ]]}}
+	    }
+	  } 
+  },
+"Outputs": {
+}
+}
